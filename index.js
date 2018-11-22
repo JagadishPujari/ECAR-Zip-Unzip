@@ -5,6 +5,7 @@ var fs = require('fs');
 var _ = require('lodash');
 var find = require('find');
 var copydir = require('copy-dir');
+var zipdir = require('zip-dir');
 
 var inputPath = './input';
 var output = './output';
@@ -29,7 +30,7 @@ function extractZip(src, dest){
       var destination = source.split('.zip')[0];
       source = dest + "/" + source;
       destination = dest + "/" + destination;
-      extractContent(source.trim(), destination.trim());
+      extractContent(source.trim(), destination.trim(),dest);
     }
   })
   .then(function () {
@@ -40,7 +41,7 @@ function extractZip(src, dest){
 }
 
 
-function extractContent(contentPath, location)
+function extractContent(contentPath, location,finalECARPath)
 {
   myTask.extractFull(contentPath.trim(), location.trim())
     .progress(function (files) {
@@ -57,6 +58,14 @@ function extractContent(contentPath, location)
           copydir.sync('./assets', dirName);
         });
       }); 
+      var arr = location.split('/');
+      var result = location.replace("/" + arr.pop(),'');
+      zipdir(result.trim(), { saveTo: result.trim() + "/"+ arr.pop() +".zip"}, function (err, buffer) {
+        rimraf(location.trim(), function () { 
+          console.log('Directory deleted!!!'); 
+          generateECAR(finalECARPath);
+        }); 
+      });
     })
     .then(function () {
       console.log('Second level Extraction is Done!!');
@@ -64,4 +73,11 @@ function extractContent(contentPath, location)
     .catch(function (err) {
       console.error(err);
     });
+}
+
+function generateECAR(ecarPath){
+  console.log("Final ECAR generate",ecarPath);
+  var arr = ecarPath.split('/');
+  zipdir(ecarPath.trim(), { saveTo: "./ECARS/" + arr[2] + ".ecar"}, function (err, buffer) {
+  });
 }
