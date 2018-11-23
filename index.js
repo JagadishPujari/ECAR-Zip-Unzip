@@ -6,6 +6,10 @@ var _ = require('lodash');
 var find = require('find');
 var copydir = require('copy-dir');
 var zipdir = require('zip-dir');
+var updateECML = require('./assetsPatchInECML.js');
+var ecmlBuilder = require('./libs/ecmlBuilder.js');
+
+var builder = require('xmlbuilder');
 
 var inputPath = './input';
 var output = './output';
@@ -13,13 +17,14 @@ var output = './output';
 fs.readdir(inputPath, function(err, items) {
     _.each(items,function(file){
         var src = inputPath + "/" + file;
-        var dest = output + "/" + file.split('.zip')[0];
-        extractZip(src,dest);
+        var content_id = file.split('.zip')[0];
+        var dest = output + "/" + content_id;
+        extractZip(src,dest,content_id);
     });
 });
 
 
-function extractZip(src, dest){
+function extractZip(src, dest,content_id){
   myTask.extractFull(src, dest)
   .progress(function (files) {
     var zipfilepath = files.filter(function (value) {
@@ -30,7 +35,7 @@ function extractZip(src, dest){
       var destination = source.split('.zip')[0];
       source = dest + "/" + source;
       destination = dest + "/" + destination;
-      extractContent(source.trim(), destination.trim(),dest);
+      extractContent(source.trim(), destination.trim(),dest,content_id);
     }
   })
   .then(function () {
@@ -41,33 +46,36 @@ function extractZip(src, dest){
 }
 
 
-function extractContent(contentPath, location,finalECARPath)
+function extractContent(contentPath, location,finalECARPath,content_id)
 {
   myTask.extractFull(contentPath.trim(), location.trim())
     .progress(function (files) {
-      rimraf(contentPath.trim(), function () { console.log('Directory deleted!!!'); }); 
-       fs.readdir(location, function(err, items) {
-         var assetsPath = items.filter(function (value) {
-          return value.includes("assets");
-        });
-        fs.readdir(location + "/" + assetsPath, function(err, files) {
-            var temp = files.filter(function (value) {
-            return value.includes("content-plugins");
-          });
-          var dirName = location + "/" + assetsPath + "/" + temp[0];
-          copydir.sync('./assets', dirName);
-        });
-      }); 
-      var arr = location.split('/');
-      var result = location.replace("/" + arr.pop(),'');
-      zipdir(result.trim(), { saveTo: result.trim() + "/"+ arr.pop() +".zip"}, function (err, buffer) {
-        rimraf(location.trim(), function () { 
-          console.log('Directory deleted!!!'); 
-          generateECAR(finalECARPath);
-        }); 
-      });
     })
     .then(function () {
+      rimraf(contentPath.trim(), function () { console.log('First Directory deleted!!!'); }); 
+      fs.readdir(location, function(err, items) {
+        var assetsPath = items.filter(function (value) {
+           return value.includes("assets");
+         });
+         var ECMLPath = items.filter(function (value) {
+           return value.includes("index.ecml");
+         });
+        if(ECMLPath.length > 0){
+         updateECML.correctContent(content_id).then(function(content){
+           var body = buildECML(JSON.parse(content), true);
+           fs.writeFile(location + "/index.ecml",body, function(){
+            createSecondZip(location,finalECARPath);
+           });
+          });
+        }
+       fs.readdir(location + "/" + assetsPath, function(err, files) {
+           var temp = files.filter(function (value) {
+           return value.includes("content-plugins");
+         });
+         var dirName = location + "/" + assetsPath + "/" + temp[0];
+         copydir.sync('./assets', dirName);
+       });
+      }); 
       console.log('Second level Extraction is Done!!');
     })
     .catch(function (err) {
@@ -75,9 +83,92 @@ function extractContent(contentPath, location,finalECARPath)
     });
 }
 
+function createSecondZip(location,finalECARPath){
+  var arr = location.split('/');
+  var result = location.replace("/" + arr.pop(),'');
+  zipdir(location.trim(), { saveTo: result.trim() + "/" +arr.pop() +".zip"}, function (err, buffer) {
+    rimraf(location.trim(), function (err) { 
+      // fs.unlinkSync(location);
+      console.log('Second Directory deleted!!!',err); 
+      generateECAR(finalECARPath);
+    }); 
+  });
+}
+
 function generateECAR(ecarPath){
-  console.log("Final ECAR generate",ecarPath);
   var arr = ecarPath.split('/');
   zipdir(ecarPath.trim(), { saveTo: "./ECARS/" + arr[2] + ".ecar"}, function (err, buffer) {
   });
 }
+
+function start(data, xml) {
+  var instance = this;
+  var props = _.omitBy(data, _.isObject);
+  _.forIn(props, function (value, key) {
+      addProperty(key, value, xml);
+  });
+
+  var objects = _.pickBy(data, _.isObject);
+  _.forIn(objects, function (value, key) {
+      addObject(key, value, xml);
+  });
+}
+
+function addProperty(key, value, xml) {
+  switch (key) {
+      case "__text":
+          xml = xml.txt(value);
+          break;
+      case "__cdata":
+          xml = xml.dat(value);
+          break;
+      default:
+          if (value === 0) {
+              xml = xml.att(key, "0");
+          } else {
+              xml = xml.att(key, (value || '').toString());
+          }
+  }
+}
+
+function addObject(key, value, xml) {
+  var instance = this;
+  if (_.isArray(value)) {
+      _.each(value, function (value) {
+          buildXML(key, value, xml);
+      });
+  } else {
+      buildXML(key, value, xml);
+  }
+}
+
+function buildXML(name, data, xml) {
+  var instance = this;
+  xml = xml.ele(name);
+  var props = _.omitBy(data, _.isObject);
+  _.forIn(props, function (value, key) {
+      addProperty(key, value, xml);
+  });
+  var objects = _.pickBy(data, _.isObject);
+  _.forIn(objects, function (value, key) {
+      if (key === '__cdata') {
+          addProperty(key, JSON.stringify(value), xml);
+      } else {
+          addObject(key, value, xml);
+      }
+  });
+  xml = xml.up()
+}
+
+function buildECML(json, prettyPrint) {
+  var xml = builder.create('theme');
+  start(json.theme, xml);
+  if (prettyPrint) {
+      return xml.end({
+          pretty: true
+      });
+  } else {
+      return xml.end();
+  }
+}
+module.exports.buildECML=buildECML;
